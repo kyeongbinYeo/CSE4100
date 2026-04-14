@@ -1,48 +1,78 @@
 #include "csapp.h"
 #include "myshell.h"
 
+/* ------------------------------------------------------------------ */
+/*  Built-in command handlers                                           */
+/* ------------------------------------------------------------------ */
+
+static void builtin_exit(char **args)
+{
+    (void)args;
+    exit(0);
+}
+
+static void builtin_cd(char **args)
+{
+    if (args[1] == NULL) {
+        fprintf(stderr, "cd: missing argument\n");
+        return;
+    }
+    if (chdir(args[1]) != 0)
+        perror("cd");
+}
+
+/* Table of built-in commands and their handlers */
+static builtin_entry_t builtin_table[] = {
+    { "exit", builtin_exit },
+    { "quit", builtin_exit },
+    { "cd",   builtin_cd   },
+    { NULL,   NULL         }
+};
+
+/* ------------------------------------------------------------------ */
+/*  read_input                                                          */
+/* ------------------------------------------------------------------ */
+
 /*
- * parse_cmdline - Tokenize input line into argument array.
- *                 Returns 1 if background job requested, 0 otherwise.
+ * Print the shell prompt and read one line from stdin.
+ * Returns 1 on success, 0 on EOF.
+ */
+int read_input(char *buf)
+{
+    printf("%s", SHELL_PROMPT);
+    fflush(stdout);
+
+    if (fgets(buf, LINE_BUF_SIZE, stdin) == NULL)
+        return 0;
+
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  parse_cmdline                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Tokenize input line with strtok into args array.
+ * Returns 1 if last token is "&" (background), 0 otherwise.
  */
 int parse_cmdline(char *line, char **args)
 {
-    int count = 0;
-    char *ptr = line;
+    int     count = 0;
+    char   *token;
 
-    /* Skip leading whitespace */
-    while (*ptr == ' ' || *ptr == '\t')
-        ptr++;
-
-    while (*ptr != '\0') {
-        /* Skip whitespace between tokens */
-        while (*ptr == ' ' || *ptr == '\t')
-            ptr++;
-
-        if (*ptr == '\0' || *ptr == '\n')
-            break;
-
-        args[count++] = ptr;
-
-        /* Advance to end of token */
-        while (*ptr != '\0' && *ptr != ' ' &&
-               *ptr != '\t' && *ptr != '\n')
-            ptr++;
-
-        if (*ptr == '\0')
-            break;
-
-        *ptr = '\0';
-        ptr++;
+    token = strtok(line, " \t\n");
+    while (token != NULL && count < ARG_MAX_COUNT - 1) {
+        args[count++] = token;
+        token = strtok(NULL, " \t\n");
     }
-
     args[count] = NULL;
 
     if (count == 0)
         return 0;
 
-    /* Check for background operator */
-    if (!strcmp(args[count - 1], "&")) {
+    /* Detect background operator */
+    if (strcmp(args[count - 1], "&") == 0) {
         args[count - 1] = NULL;
         return 1;
     }
@@ -50,108 +80,114 @@ int parse_cmdline(char *line, char **args)
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/*  run_builtin                                                         */
+/* ------------------------------------------------------------------ */
+
 /*
- * run_builtin - Handle shell built-in commands.
- *               Returns 1 if command was a built-in, 0 otherwise.
+ * Search builtin_table for args[0].
+ * If found, call its handler and return 1; otherwise return 0.
  */
 int run_builtin(char **args)
 {
+    int i;
+
+    if (args[0] == NULL)
+        return 0;
+
     /* Ignore lone ampersand */
-    if (!strcmp(args[0], "&"))
+    if (strcmp(args[0], "&") == 0)
         return 1;
 
-    /* exit / quit: terminate the shell */
-    if (!strcmp(args[0], "exit") || !strcmp(args[0], "quit"))
-        exit(0);
-
-    /* cd: change working directory */
-    if (!strcmp(args[0], "cd")) {
-        if (args[1] == NULL) {
-            fprintf(stderr, "cd: missing argument\n");
-        } else if (chdir(args[1]) != 0) {
-            perror("cd");
+    for (i = 0; builtin_table[i].name != NULL; i++) {
+        if (strcmp(args[0], builtin_table[i].name) == 0) {
+            builtin_table[i].handler(args);
+            return 1;
         }
-        return 1;
     }
 
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/*  spawn_process                                                       */
+/* ------------------------------------------------------------------ */
+
 /*
- * execute_cmd - Evaluate and execute a command line.
- *               Uses execvp for automatic PATH resolution.
+ * Fork a child process and execvp the command.
+ * Parent waits for foreground jobs; prints PID for background jobs.
  */
-void execute_cmd(char *line)
+void spawn_process(char **args, int is_bg, char *line)
 {
-    char    buf[MAX_LINE];
-    char   *args[MAX_ARGS];
-    int     is_bg;
-    pid_t   child_pid;
+    pid_t   pid;
     int     status;
 
-    strncpy(buf, line, MAX_LINE - 1);
-    buf[MAX_LINE - 1] = '\0';
+    pid = Fork();
 
-    is_bg = parse_cmdline(buf, args);
-
-    /* Empty input */
-    if (args[0] == NULL)
-        return;
-
-    /* Handle built-in commands in parent process */
-    if (run_builtin(args))
-        return;
-
-    /* Fork child for external command */
-    child_pid = Fork();
-
-    if (child_pid == 0) {
-        /* Child: execvp automatically searches PATH */
+    if (pid == 0) {
+        /* Child process */
         if (execvp(args[0], args) < 0) {
             fprintf(stderr, "%s: command not found\n", args[0]);
             exit(1);
         }
     }
 
-    /* Parent: wait for foreground job or print bg job info */
-    if (!is_bg) {
-        Waitpid(child_pid, &status, 0);
+    /* Parent process */
+    if (is_bg) {
+        printf("[%d] %s", pid, line);
     } else {
-        printf("[%d] %s", child_pid, line);
+        Waitpid(pid, &status, 0);
     }
 }
 
+/* ------------------------------------------------------------------ */
+/*  execute_cmd                                                         */
+/* ------------------------------------------------------------------ */
+
 /*
- * read_input - Print prompt and read a line from stdin.
- *              Returns 0 on EOF, 1 otherwise.
+ * Parse and dispatch one command line.
+ * Built-ins run in the parent; external commands fork a child.
  */
-int read_input(char *buf)
+void execute_cmd(char *line)
 {
-    printf("%s", SHELL_PROMPT);
-    fflush(stdout);
+    char    buf[LINE_BUF_SIZE];
+    char   *args[ARG_MAX_COUNT];
+    int     is_bg;
 
-    if (fgets(buf, MAX_LINE, stdin) == NULL)
-        return 0;
+    strncpy(buf, line, LINE_BUF_SIZE - 1);
+    buf[LINE_BUF_SIZE - 1] = '\0';
 
-    return 1;
+    is_bg = parse_cmdline(buf, args);
+
+    if (args[0] == NULL)
+        return;
+
+    if (run_builtin(args))
+        return;
+
+    spawn_process(args, is_bg, line);
 }
 
+/* ------------------------------------------------------------------ */
+/*  main                                                                */
+/* ------------------------------------------------------------------ */
+
 /*
- * main - Shell entry point.
- *        Uses do-while loop: prompt → read → parse → execute.
+ * Shell entry point.
+ * Infinite for(;;) loop: read → parse → execute.
  */
 int main(void)
 {
-    char input[MAX_LINE];
+    char input[LINE_BUF_SIZE];
 
-    do {
+    for (;;) {
         if (!read_input(input)) {
             if (feof(stdin))
                 exit(0);
             continue;
         }
         execute_cmd(input);
-    } while (1);
+    }
 
     return 0;
 }
