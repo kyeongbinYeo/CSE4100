@@ -1,15 +1,17 @@
 #ifndef __MYSHELL_H__
 #define __MYSHELL_H__
 
-#define MAXARGS 128
-#define MAXLINE 8192
-#define HISTORY_LIMIT 1000
-#define PROMPT "CSE4100-SP-P2> "
+#define MAX_ARGS    128
+#define MAX_LINE    8192
+#define SHELL_PROMPT "CSE4100-SP-P2> "
 
-void eval(char *cmdline);
-int builtin_command(char **argv);
-int parseline(char *buf, char **argv);
-void add_history(const char *cmd);
-int handle_history_reexec(char *cmd);
+/* Parse command line into argument array, return 1 if background job */
+int     parse_cmdline(char *line, char **args);
+
+/* Check and execute built-in commands, return 1 if built-in */
+int     run_builtin(char **args);
+
+/* Main command evaluation function */
+void    execute_cmd(char *line);
 
 #endif /* __MYSHELL_H__ */

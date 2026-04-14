@@ -1,147 +1,157 @@
 #include "csapp.h"
 #include "myshell.h"
 
-#define PROMPT "CSE4100-SP-P2> "
+/*
+ * parse_cmdline - Tokenize input line into argument array.
+ *                 Returns 1 if background job requested, 0 otherwise.
+ */
+int parse_cmdline(char *line, char **args)
+{
+    int count = 0;
+    char *ptr = line;
 
-char *history[HISTORY_LIMIT];
-int history_count = 0;
+    /* Skip leading whitespace */
+    while (*ptr == ' ' || *ptr == '\t')
+        ptr++;
 
-/* Phase 1에서는 히스토리 재실행 기능은 없으므로 더미로 */
-int handle_history_reexec(char *cmd) {
+    while (*ptr != '\0') {
+        /* Skip whitespace between tokens */
+        while (*ptr == ' ' || *ptr == '\t')
+            ptr++;
+
+        if (*ptr == '\0' || *ptr == '\n')
+            break;
+
+        args[count++] = ptr;
+
+        /* Advance to end of token */
+        while (*ptr != '\0' && *ptr != ' ' &&
+               *ptr != '\t' && *ptr != '\n')
+            ptr++;
+
+        if (*ptr == '\0')
+            break;
+
+        *ptr = '\0';
+        ptr++;
+    }
+
+    args[count] = NULL;
+
+    if (count == 0)
+        return 0;
+
+    /* Check for background operator */
+    if (!strcmp(args[count - 1], "&")) {
+        args[count - 1] = NULL;
+        return 1;
+    }
+
     return 0;
 }
 
-/* 명령어를 히스토리에 저장 (Phase 2 확장 대비) */
-void add_history(const char *cmd) {
-    if (history_count < HISTORY_LIMIT) {
-        history[history_count++] = strdup(cmd);
-    } else {
-        free(history[0]);
-        for (int i = 1; i < HISTORY_LIMIT; ++i)
-            history[i - 1] = history[i];
-        history[HISTORY_LIMIT - 1] = strdup(cmd);
-    }
-}
+/*
+ * run_builtin - Handle shell built-in commands.
+ *               Returns 1 if command was a built-in, 0 otherwise.
+ */
+int run_builtin(char **args)
+{
+    /* Ignore lone ampersand */
+    if (!strcmp(args[0], "&"))
+        return 1;
 
-/* 명령어 실행 함수 */
-void eval(char *cmdline) {
-    char *argv[MAXARGS];
-    char buf[MAXLINE];
-    int bg;
-    pid_t pid;
-
-    strcpy(buf, cmdline);
-    bg = parseline(buf, argv);
-    if (argv[0] == NULL) return;
-
-    if (handle_history_reexec(argv[0])) return;
-
-    add_history(buf);
-
-    if (!builtin_command(argv)) {
-        if ((pid = Fork()) == 0) {
-            // 절대/상대 경로 직접 실행
-            if (argv[0][0] == '/' || argv[0][0] == '.') {
-                execve(argv[0], argv, environ);
-            } else {
-                // PATH 탐색
-                char *path_env = getenv("PATH");
-                if (path_env != NULL) {
-                    char *path_copy = strdup(path_env);
-                    char *dir = strtok(path_copy, ":");
-                    char fullpath[MAXLINE];
-                    while (dir != NULL) {
-                        snprintf(fullpath, sizeof(fullpath), "%s/%s", dir, argv[0]);
-                        execve(fullpath, argv, environ);
-                        dir = strtok(NULL, ":");
-                    }
-                    free(path_copy);
-                }
-            }
-            fprintf(stderr, "%s: 명령어를 찾을 수 없습니다.\n", argv[0]);
-            exit(1);
-        }
-
-        if (!bg) {
-            int status;
-            Waitpid(pid, &status, 0);
-        } else {
-            printf("[%d] %s", pid, cmdline);
-        }
-    }
-}
-
-/* 내장 명령어 처리 */
-int builtin_command(char **argv) {
-    if (!strcmp(argv[0], "exit") || !strcmp(argv[0], "quit"))
+    /* exit / quit: terminate the shell */
+    if (!strcmp(args[0], "exit") || !strcmp(args[0], "quit"))
         exit(0);
 
-    if (!strcmp(argv[0], "&"))
-        return 1;
-
-    if (!strcmp(argv[0], "cd")) {
-        if (argv[1] == NULL)
-            fprintf(stderr, "cd: 디렉토리를 지정해주세요.\n");
-        else if (chdir(argv[1]) < 0)
-            perror("cd 오류");
-        return 1;
-    }
-
-    if (!strcmp(argv[0], "history")) {
-        for (int i = 0; i < history_count; ++i)
-            printf("%d\t%s\n", i + 1, history[i]);  // 개행 포함
+    /* cd: change working directory */
+    if (!strcmp(args[0], "cd")) {
+        if (args[1] == NULL) {
+            fprintf(stderr, "cd: missing argument\n");
+        } else if (chdir(args[1]) != 0) {
+            perror("cd");
+        }
         return 1;
     }
 
     return 0;
 }
 
-/* 명령어 파싱 */
-int parseline(char *buf, char **argv) {
-    int argc = 0;
-    int bg;
+/*
+ * execute_cmd - Evaluate and execute a command line.
+ *               Uses execvp for automatic PATH resolution.
+ */
+void execute_cmd(char *line)
+{
+    char    buf[MAX_LINE];
+    char   *args[MAX_ARGS];
+    int     is_bg;
+    pid_t   child_pid;
+    int     status;
 
-    // 공백 제거
-    while (*buf == ' ')
-        buf++;
+    strncpy(buf, line, MAX_LINE - 1);
+    buf[MAX_LINE - 1] = '\0';
 
-    // 인자 분리
-    while (*buf != '\0') {
-        while (*buf == ' ') buf++;
-        if (*buf == '\0') break;
+    is_bg = parse_cmdline(buf, args);
 
-        argv[argc++] = buf;
+    /* Empty input */
+    if (args[0] == NULL)
+        return;
 
-        while (*buf && *buf != ' ' && *buf != '\n')
-            buf++;
+    /* Handle built-in commands in parent process */
+    if (run_builtin(args))
+        return;
 
-        if (*buf == '\0') break;
+    /* Fork child for external command */
+    child_pid = Fork();
 
-        *buf = '\0';
-        buf++;
+    if (child_pid == 0) {
+        /* Child: execvp automatically searches PATH */
+        if (execvp(args[0], args) < 0) {
+            fprintf(stderr, "%s: command not found\n", args[0]);
+            exit(1);
+        }
     }
 
-    argv[argc] = NULL;
-
-    if (argc == 0) return 1;
-
-    bg = (argc > 0 && !strcmp(argv[argc - 1], "&"));
-    if (bg)
-        argv[--argc] = NULL;
-
-    return bg;
+    /* Parent: wait for foreground job or print bg job info */
+    if (!is_bg) {
+        Waitpid(child_pid, &status, 0);
+    } else {
+        printf("[%d] %s", child_pid, line);
+    }
 }
 
-/* 메인 루프 */
-int main() {
-    char cmdline[MAXLINE];
+/*
+ * read_input - Print prompt and read a line from stdin.
+ *              Returns 0 on EOF, 1 otherwise.
+ */
+int read_input(char *buf)
+{
+    printf("%s", SHELL_PROMPT);
+    fflush(stdout);
 
-    while (1) {
-        printf("%s", PROMPT);
-        if (fgets(cmdline, MAXLINE, stdin) == NULL) {
+    if (fgets(buf, MAX_LINE, stdin) == NULL)
+        return 0;
+
+    return 1;
+}
+
+/*
+ * main - Shell entry point.
+ *        Uses do-while loop: prompt → read → parse → execute.
+ */
+int main(void)
+{
+    char input[MAX_LINE];
+
+    do {
+        if (!read_input(input)) {
             if (feof(stdin))
                 exit(0);
+            continue;
         }
-        eval(cmdline);
-    }
+        execute_cmd(input);
+    } while (1);
+
+    return 0;
 }
