@@ -1,192 +1,140 @@
 #include "csapp.h"
 #include "myshell.h"
 
-/* ------------------------------------------------------------------ */
-/*  Built-in command handlers                                           */
-/* ------------------------------------------------------------------ */
-
-static void builtin_exit(char **args)
+/* handlers for builtin cmds */
+static void handler_exit(char **argv)
 {
-    (void)args;
-    exit(0);
+    (void)argv;
+    exit(0);  // just exit
 }
 
-static void builtin_cd(char **args)
+static void handler_cd(char **argv)
 {
-    if (args[1] == NULL) {
+    // no argument given
+    if (argv[1] == NULL) {
         fprintf(stderr, "cd: missing argument\n");
         return;
     }
-    if (chdir(args[1]) != 0)
-        perror("cd");
+    if (chdir(argv[1]) != 0)
+        perror("cd");  // chdir failed
 }
 
-/* Table of built-in commands and their handlers */
-static builtin_entry_t builtin_table[] = {
-    { "exit", builtin_exit },
-    { "quit", builtin_exit },
-    { "cd",   builtin_cd   },
-    { NULL,   NULL         }
+// table of supported builtin commands
+static cmd_entry_t cmd_table[] = {
+    { "exit", handler_exit },
+    { "quit", handler_exit },  // quit does same as exit
+    { "cd",   handler_cd   },
+    { NULL,   NULL         }   // end of table
 };
 
-/* ------------------------------------------------------------------ */
-/*  read_input                                                          */
-/* ------------------------------------------------------------------ */
-
 /*
- * Print the shell prompt and read one line from stdin.
- * Returns 1 on success, 0 on EOF.
+ * show prompt and read from stdin
+ * returns 0 if EOF
  */
-int read_input(char *buf)
+int read_input(char *cmdline)
 {
-    printf("%s", SHELL_PROMPT);
+    printf("%s", PROMPT);
     fflush(stdout);
 
-    if (fgets(buf, LINE_BUF_SIZE, stdin) == NULL)
+    if (fgets(cmdline, MAXLINE, stdin) == NULL)
         return 0;
 
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/*  parse_cmdline                                                       */
-/* ------------------------------------------------------------------ */
-
-/*
- * Tokenize input line with strtok into args array.
- * Returns 1 if last token is "&" (background), 0 otherwise.
- */
-int parse_cmdline(char *line, char **args)
+void eval(char *cmdline)
 {
-    int     count = 0;
-    char   *token;
+    char   *argv[MAXARGS];
+    char    line_buf[MAXLINE];
+    int     is_bg;
+    pid_t   child_pid;
+    int     exit_status;
 
-    token = strtok(line, " \t\n");
-    while (token != NULL && count < ARG_MAX_COUNT - 1) {
-        args[count++] = token;
-        token = strtok(NULL, " \t\n");
+    strcpy(line_buf, cmdline);
+    is_bg = parseline(line_buf, argv);
+
+    if (argv[0] == NULL)
+        return;  // empty line
+
+    if (!builtin_command(argv)) {
+        child_pid = Fork();
+
+        if (child_pid == 0) {
+            // child process - run the command
+            if (execvp(argv[0], argv) < 0) {
+                fprintf(stderr, "%s: command not found\n", argv[0]);
+                exit(1);
+            }
+        }
+
+        if (!is_bg) {
+            Waitpid(child_pid, &exit_status, 0);  // wait for fg
+        } else {
+            printf("[%d] %s", child_pid, cmdline);  // bg job
+        }
     }
-    args[count] = NULL;
-
-    if (count == 0)
-        return 0;
-
-    /* Detect background operator */
-    if (strcmp(args[count - 1], "&") == 0) {
-        args[count - 1] = NULL;
-        return 1;
-    }
-
-    return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  run_builtin                                                         */
-/* ------------------------------------------------------------------ */
-
-/*
- * Search builtin_table for args[0].
- * If found, call its handler and return 1; otherwise return 0.
- */
-int run_builtin(char **args)
+int builtin_command(char **argv)
 {
     int i;
 
-    if (args[0] == NULL)
+    if (argv[0] == NULL)
         return 0;
 
-    /* Ignore lone ampersand */
-    if (strcmp(args[0], "&") == 0)
+    if (!strcmp(argv[0], "&"))  // ignore &
         return 1;
 
-    for (i = 0; builtin_table[i].name != NULL; i++) {
-        if (strcmp(args[0], builtin_table[i].name) == 0) {
-            builtin_table[i].handler(args);
+    /* search through cmd_table */
+    for (i = 0; cmd_table[i].name != NULL; i++) {
+        if (!strcmp(argv[0], cmd_table[i].name)) {
+            cmd_table[i].handler(argv);
             return 1;
         }
     }
 
-    return 0;
+    return 0;  // not a builtin
 }
 
-/* ------------------------------------------------------------------ */
-/*  spawn_process                                                       */
-/* ------------------------------------------------------------------ */
-
 /*
- * Fork a child process and execvp the command.
- * Parent waits for foreground jobs; prints PID for background jobs.
+ * parseline - split input into tokens
+ * bg job if last arg is &
  */
-void spawn_process(char **args, int is_bg, char *line)
+int parseline(char *buf, char **argv)
 {
-    pid_t   pid;
-    int     status;
-
-    pid = Fork();
-
-    if (pid == 0) {
-        /* Child process */
-        if (execvp(args[0], args) < 0) {
-            fprintf(stderr, "%s: command not found\n", args[0]);
-            exit(1);
-        }
-    }
-
-    /* Parent process */
-    if (is_bg) {
-        printf("[%d] %s", pid, line);
-    } else {
-        Waitpid(pid, &status, 0);
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/*  execute_cmd                                                         */
-/* ------------------------------------------------------------------ */
-
-/*
- * Parse and dispatch one command line.
- * Built-ins run in the parent; external commands fork a child.
- */
-void execute_cmd(char *line)
-{
-    char    buf[LINE_BUF_SIZE];
-    char   *args[ARG_MAX_COUNT];
+    int     nargs = 0;
     int     is_bg;
+    char   *token;
 
-    strncpy(buf, line, LINE_BUF_SIZE - 1);
-    buf[LINE_BUF_SIZE - 1] = '\0';
+    // tokenize using strtok
+    token = strtok(buf, " \t\n");
+    while (token != NULL && nargs < MAXARGS - 1) {
+        argv[nargs++] = token;
+        token = strtok(NULL, " \t\n");
+    }
+    argv[nargs] = NULL;
 
-    is_bg = parse_cmdline(buf, args);
+    if (nargs == 0)
+        return 0;
 
-    if (args[0] == NULL)
-        return;
+    // check for background operator
+    if ((is_bg = (!strcmp(argv[nargs - 1], "&"))) != 0)
+        argv[--nargs] = NULL;
 
-    if (run_builtin(args))
-        return;
-
-    spawn_process(args, is_bg, line);
+    return is_bg;
 }
 
-/* ------------------------------------------------------------------ */
-/*  main                                                                */
-/* ------------------------------------------------------------------ */
-
-/*
- * Shell entry point.
- * Infinite for(;;) loop: read → parse → execute.
- */
 int main(void)
 {
-    char input[LINE_BUF_SIZE];
+    char cmdline[MAXLINE];
 
-    for (;;) {
-        if (!read_input(input)) {
+    while (1) {
+        if (!read_input(cmdline)) {
             if (feof(stdin))
                 exit(0);
             continue;
         }
-        execute_cmd(input);
+        eval(cmdline);
     }
 
     return 0;
