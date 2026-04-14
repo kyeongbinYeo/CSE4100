@@ -1,18 +1,16 @@
 #include "csapp.h"
 #include "myshell.h"
 
-/* ------------------------------------------------------------------ */
-/*  Global variables                                                    */
-/* ------------------------------------------------------------------ */
+/*
+ * 전역 변수들
+ */
+job_t           job_list[MAXJOBS];  // job 리스트 배열
+volatile pid_t  fg_pid = 0;         // 현재 foreground 프로세스 pid
+sigset_t        mask, prev;         // 시그널 마스크
 
-job_t           job_list[MAXJOBS];  // job list
-volatile pid_t  fg_pid = 0;         // pid of current foreground process
-sigset_t        mask, prev;         // global signal masks
-
-/* ------------------------------------------------------------------ */
-/*  Job list management                                                 */
-/* ------------------------------------------------------------------ */
-
+/*
+ * init_jobs - job 리스트 초기화
+ */
 void init_jobs(void)
 {
     int i;
@@ -24,11 +22,15 @@ void init_jobs(void)
     }
 }
 
+/*
+ * add_job - 새로운 job을 리스트에 추가
+ * 가장 작은 사용 가능한 jid를 할당함
+ */
 int add_job(pid_t pid, int state, char *cmdline)
 {
     int i, jid = 1;
 
-    // find smallest available jid
+    // 사용 가능한 가장 작은 jid 찾기
     for (i = 0; i < MAXJOBS; i++)
         if (job_list[i].jid >= jid)
             jid = job_list[i].jid + 1;
@@ -46,6 +48,9 @@ int add_job(pid_t pid, int state, char *cmdline)
     return -1;
 }
 
+/*
+ * delete_job - pid에 해당하는 job 삭제
+ */
 void delete_job(pid_t pid)
 {
     int i;
@@ -60,6 +65,9 @@ void delete_job(pid_t pid)
     }
 }
 
+/*
+ * find_job_by_pid - pid로 job 찾기
+ */
 job_t *find_job_by_pid(pid_t pid)
 {
     int i;
@@ -69,6 +77,9 @@ job_t *find_job_by_pid(pid_t pid)
     return NULL;
 }
 
+/*
+ * find_job_by_jid - jid로 job 찾기
+ */
 job_t *find_job_by_jid(int jid)
 {
     int i;
@@ -78,6 +89,9 @@ job_t *find_job_by_jid(int jid)
     return NULL;
 }
 
+/*
+ * list_jobs - 현재 job 목록 출력
+ */
 void list_jobs(void)
 {
     int i;
@@ -88,19 +102,18 @@ void list_jobs(void)
         switch (job_list[i].state) {
             case RUNNING: state_str = "Running";     break;
             case STOPPED: state_str = "Stopped";     break;
-            case DONE:    state_str = "Done";         break;
-            default:      state_str = "Unknown";      break;
+            case DONE:    state_str = "Done";        break;
+            default:      state_str = "Unknown";     break;
         }
         printf("[%d] %d %s %s", job_list[i].jid, job_list[i].pid,
                state_str, job_list[i].cmdline);
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Signal handlers                                                     */
-/* ------------------------------------------------------------------ */
-
-// SIGCHLD: child stopped or terminated
+/*
+ * sigchld_handler - SIGCHLD 시그널 핸들러
+ * 자식 프로세스가 종료되거나 정지되면 호출됨
+ */
 void sigchld_handler(int sig)
 {
     pid_t pid;
@@ -114,18 +127,18 @@ void sigchld_handler(int sig)
         if (job == NULL) continue;
 
         if (WIFSTOPPED(status)) {
-            // child stopped (Ctrl+Z)
+            // 자식이 정지됨 (Ctrl+Z)
             job->state = STOPPED;
             printf("\n[%d] %d Stopped %s", job->jid, job->pid, job->cmdline);
             fflush(stdout);
             if (job->pid == fg_pid)
-                fg_pid = 0;  // release fg so sigsuspend loop exits
+                fg_pid = 0;
         } else {
-            // child terminated
+            // 자식이 종료됨
             if (pid == fg_pid) {
                 fg_pid = 0;
             } else {
-                // bg job terminated - reprint prompt
+                // 백그라운드 job 종료시 프롬프트 다시 출력
                 printf("\n%s", PROMPT);
                 fflush(stdout);
             }
@@ -134,38 +147,44 @@ void sigchld_handler(int sig)
     }
 }
 
-// SIGINT: Ctrl+C - terminate foreground job
+/*
+ * sigint_handler - SIGINT 시그널 핸들러 (Ctrl+C)
+ * foreground job 종료
+ */
 void sigint_handler(int sig)
 {
     (void)sig;
     if (fg_pid > 0) {
         Kill(-fg_pid, SIGINT);
-        Sio_puts("\n");  // 개행 추가
+        Sio_puts("\n");
     }
 }
 
-
-// SIGTSTP: Ctrl+Z - stop foreground job
+/*
+ * sigtstp_handler - SIGTSTP 시그널 핸들러 (Ctrl+Z)
+ * foreground job 정지
+ */
 void sigtstp_handler(int sig)
 {
     (void)sig;
     if (fg_pid > 0)
-        Kill(-fg_pid, SIGTSTP);  // send to entire process group
+        Kill(-fg_pid, SIGTSTP);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Built-in command handlers                                           */
-/* ------------------------------------------------------------------ */
-
+/*
+ * handler_exit - exit/quit 명령어 처리
+ */
 static void handler_exit(char **argv)
 {
     (void)argv;
-    exit(0);  // just exit
+    exit(0);
 }
 
+/*
+ * handler_cd - cd 명령어 처리
+ */
 static void handler_cd(char **argv)
 {
-    // no argument given
     if (argv[1] == NULL) {
         fprintf(stderr, "cd: missing argument\n");
         return;
@@ -174,12 +193,19 @@ static void handler_cd(char **argv)
         perror("cd");
 }
 
+/*
+ * handler_jobs - jobs 명령어 처리
+ */
 static void handler_jobs(char **argv)
 {
     (void)argv;
     list_jobs();
 }
 
+/*
+ * handler_fg - fg 명령어 처리
+ * 백그라운드/정지된 job을 foreground로 가져옴
+ */
 static void handler_fg(char **argv)
 {
     int    jid;
@@ -199,11 +225,13 @@ static void handler_fg(char **argv)
         return;
     }
 
+    // job이 삭제되기 전에 pid 저장
     pid = job->pid;
     fg_pid = pid;
     job->state = RUNNING;
     Kill(-pid, SIGCONT);
 
+    // foreground에서 대기
     sigset_t empty;
     sigemptyset(&empty);
     sigprocmask(SIG_SETMASK, &empty, NULL);
@@ -212,6 +240,10 @@ static void handler_fg(char **argv)
     sigprocmask(SIG_BLOCK, &mask, NULL);
 }
 
+/*
+ * handler_bg - bg 명령어 처리
+ * 정지된 job을 백그라운드에서 재개
+ */
 static void handler_bg(char **argv)
 {
     int    jid;
@@ -231,10 +263,14 @@ static void handler_bg(char **argv)
     }
 
     job->state = RUNNING;
-    Kill(-job->pid, SIGCONT);  // resume in background
+    Kill(-job->pid, SIGCONT);
     printf("[%d] %d %s", job->jid, job->pid, job->cmdline);
 }
 
+/*
+ * handler_kill - kill 명령어 처리
+ * job 종료
+ */
 static void handler_kill(char **argv)
 {
     int    jid;
@@ -253,10 +289,10 @@ static void handler_kill(char **argv)
         return;
     }
 
-    Kill(-job->pid, SIGTERM);  // terminate process group
+    Kill(-job->pid, SIGTERM);
 }
 
-// table of supported builtin commands
+// 빌트인 명령어 테이블
 static cmd_entry_t cmd_table[] = {
     { "exit", handler_exit },
     { "quit", handler_exit },
@@ -268,10 +304,9 @@ static cmd_entry_t cmd_table[] = {
     { NULL,   NULL         }
 };
 
-/* ------------------------------------------------------------------ */
-/*  read_input                                                          */
-/* ------------------------------------------------------------------ */
-
+/*
+ * read_input - 사용자 입력 읽기
+ */
 int read_input(char *cmdline)
 {
     printf("%s", PROMPT);
@@ -283,10 +318,9 @@ int read_input(char *cmdline)
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/*  split_pipes                                                         */
-/* ------------------------------------------------------------------ */
-
+/*
+ * split_pipes - 파이프(|)로 명령어 분리
+ */
 int split_pipes(char *buf, char *cmds[], int max)
 {
     int   n = 0;
@@ -302,10 +336,11 @@ int split_pipes(char *buf, char *cmds[], int max)
     return n;
 }
 
-/* ------------------------------------------------------------------ */
-/*  parseline                                                           */
-/* ------------------------------------------------------------------ */
-
+/*
+ * parseline - 명령어 라인 파싱
+ * 공백으로 토큰 분리, 따옴표 처리, 백그라운드(&) 확인
+ * 반환값: 백그라운드 실행이면 1, 아니면 0
+ */
 int parseline(char *buf, char **argv)
 {
     int     nargs = 0;
@@ -313,17 +348,18 @@ int parseline(char *buf, char **argv)
     char   *ptr = buf;
 
     while (*ptr != '\0' && *ptr != '\n') {
+        // 공백 스킵
         while (*ptr == ' ' || *ptr == '\t') ptr++;
         if (*ptr == '\0' || *ptr == '\n') break;
 
         if (*ptr == '"') {
-            // quoted token: strip the quotes
+            // 따옴표로 묶인 토큰 처리
             ptr++;
             argv[nargs++] = ptr;
             while (*ptr != '"' && *ptr != '\0') ptr++;
             if (*ptr == '"') *ptr++ = '\0';
         } else {
-            // normal token
+            // 일반 토큰
             argv[nargs++] = ptr;
             while (*ptr && *ptr != ' ' && *ptr != '\t' && *ptr != '\n')
                 ptr++;
@@ -335,16 +371,17 @@ int parseline(char *buf, char **argv)
     if (nargs == 0)
         return 0;
 
+    // 마지막 인자가 &인지 확인
     if ((is_bg = (!strcmp(argv[nargs - 1], "&"))) != 0)
         argv[--nargs] = NULL;
 
     return is_bg;
 }
 
-/* ------------------------------------------------------------------ */
-/*  builtin_command                                                     */
-/* ------------------------------------------------------------------ */
-
+/*
+ * builtin_command - 빌트인 명령어인지 확인하고 실행
+ * 반환값: 빌트인이면 1, 아니면 0
+ */
 int builtin_command(char **argv)
 {
     int i;
@@ -365,10 +402,10 @@ int builtin_command(char **argv)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  run_pipeline                                                        */
-/* ------------------------------------------------------------------ */
-
+/*
+ * run_pipeline - 파이프라인 실행
+ * 재귀적으로 파이프 연결하여 명령어들 실행
+ */
 void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
 {
     char   *argv[MAXARGS];
@@ -377,7 +414,7 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
     pid_t   left_pid, right_pid;
     int     status;
 
-    // base case: only one command
+    // 기본 케이스: 명령어가 하나만 남음
     if (n_cmds == 1) {
         strncpy(cmd_buf, cmds[0], MAXLINE - 1);
         cmd_buf[MAXLINE - 1] = '\0';
@@ -394,11 +431,13 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
         }
     }
 
+    // 파이프 생성
     if (pipe(pipe_fd) < 0) {
         perror("pipe");
         exit(1);
     }
 
+    // 왼쪽 자식: 첫 번째 명령어 실행
     left_pid = Fork();
     if (left_pid == 0) {
         close(pipe_fd[0]);
@@ -419,6 +458,7 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
         }
     }
 
+    // 오른쪽 자식: 나머지 파이프라인 실행
     right_pid = Fork();
     if (right_pid == 0) {
         close(pipe_fd[1]);
@@ -429,16 +469,17 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
         exit(0);
     }
 
+    // 부모: 파이프 닫고 자식들 대기
     close(pipe_fd[0]);
     close(pipe_fd[1]);
-    waitpid(left_pid, &status, 0);   // Waitpid → waitpid
-    waitpid(right_pid, &status, 0);  // Waitpid → waitpid
+    waitpid(left_pid, &status, 0);
+    waitpid(right_pid, &status, 0);
 }
 
-/* ------------------------------------------------------------------ */
-/*  eval                                                                */
-/* ------------------------------------------------------------------ */
-
+/*
+ * eval - 명령어 평가 및 실행
+ * 파이프라인, 백그라운드, 빌트인 명령어 처리
+ */
 void eval(char *cmdline)
 {
     char   *argv[MAXARGS];
@@ -458,10 +499,12 @@ void eval(char *cmdline)
     if (argv[0] == NULL)
         return;
 
+    // fork 전에 시그널 블록 (race condition 방지)
     sigprocmask(SIG_BLOCK, &mask, &prev);
 
     n_cmds = split_pipes(pipe_buf, cmds, MAXCMDS);
 
+    // 파이프라인 처리
     if (n_cmds > 1) {
         child_pid = Fork();
         if (child_pid == 0) {
@@ -474,6 +517,7 @@ void eval(char *cmdline)
         setpgid(child_pid, child_pid);
 
         if (!is_bg) {
+            // foreground 실행
             add_job(child_pid, RUNNING, cmdline);
             fg_pid = child_pid;
             sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -482,6 +526,7 @@ void eval(char *cmdline)
             while (fg_pid == child_pid)
                 sigsuspend(&empty);
         } else {
+            // 백그라운드 실행
             int jid = add_job(child_pid, RUNNING, cmdline);
             printf("[%d] %d %s", jid, child_pid, cmdline);
             sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -489,6 +534,7 @@ void eval(char *cmdline)
         return;
     }
 
+    // 단일 명령어 처리
     if (!builtin_command(argv)) {
         child_pid = Fork();
 
@@ -505,6 +551,7 @@ void eval(char *cmdline)
         setpgid(child_pid, child_pid);
 
         if (!is_bg) {
+            // foreground 실행
             add_job(child_pid, RUNNING, cmdline);
             fg_pid = child_pid;
             sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -513,6 +560,7 @@ void eval(char *cmdline)
             while (fg_pid == child_pid)
                 sigsuspend(&empty);
         } else {
+            // 백그라운드 실행
             int jid = add_job(child_pid, RUNNING, cmdline);
             printf("[%d] %d %s", jid, child_pid, cmdline);
             sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -524,32 +572,30 @@ void eval(char *cmdline)
     (void)exit_status;
 }
 
-/* ------------------------------------------------------------------ */
-/*  main                                                                */
-/* ------------------------------------------------------------------ */
-
+/*
+ * main - 쉘 메인 함수
+ */
 int main(void)
 {
     char cmdline[MAXLINE];
 
-    // initialize job list
     init_jobs();
 
-    // initialize global signal mask
+    // 시그널 마스크 설정
     sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTSTP);
-    sigprocmask(SIG_BLOCK, &mask, &prev);  // block and save prev
+    sigprocmask(SIG_BLOCK, &mask, &prev);
 
-    // register signal handlers
+    // 시그널 핸들러 등록
     Signal(SIGCHLD, sigchld_handler);
     Signal(SIGINT,  sigint_handler);
     Signal(SIGTSTP, sigtstp_handler);
 
-    // unblock after handlers registered
     sigprocmask(SIG_SETMASK, &prev, NULL);
 
+    // 메인 루프
     while (1) {
         if (!read_input(cmdline)) {
             if (feof(stdin))
