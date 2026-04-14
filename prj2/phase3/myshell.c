@@ -386,7 +386,6 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
         if (argv[0] == NULL)
             exit(0);
 
-        // set process group
         setpgid(0, pgid);
 
         if (execvp(argv[0], argv) < 0) {
@@ -400,7 +399,6 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
         exit(1);
     }
 
-    // left child
     left_pid = Fork();
     if (left_pid == 0) {
         close(pipe_fd[0]);
@@ -421,7 +419,6 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
         }
     }
 
-    // right child
     right_pid = Fork();
     if (right_pid == 0) {
         close(pipe_fd[1]);
@@ -434,8 +431,8 @@ void run_pipeline(char *cmds[], int n_cmds, pid_t pgid)
 
     close(pipe_fd[0]);
     close(pipe_fd[1]);
-    Waitpid(left_pid, &status, 0);
-    Waitpid(right_pid, &status, 0);
+    waitpid(left_pid, &status, 0);   // Waitpid → waitpid
+    waitpid(right_pid, &status, 0);  // Waitpid → waitpid
 }
 
 /* ------------------------------------------------------------------ */
