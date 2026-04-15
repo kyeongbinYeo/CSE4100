@@ -2,6 +2,7 @@
 #include "myshell.h"
 #include <unistd.h>  // usleep 사용
 
+
 /*
  * 전역 변수들
  */
@@ -136,15 +137,29 @@ void sigchld_handler(int sig)
         } else {
             if (pid == fg_pid) {
                 fg_pid = 0;
+                delete_job(pid);
             } else {
-                // 백그라운드 job 종료시 Terminated 출력 후 프롬프트
-                printf("[%d] %d Terminated %s%s", job->jid, job->pid, job->cmdline, PROMPT);
-                fflush(stdout);
+                job->state = DONE;
             }
-            delete_job(pid);
         }
     }
 }
+
+void check_done_jobs(void)
+{
+    int i;
+    for (i = 0; i < MAXJOBS; i++) {
+        if (job_list[i].state == DONE) {
+            printf("[%d] %d Terminated %s", job_list[i].jid,
+                   job_list[i].pid, job_list[i].cmdline);
+            job_list[i].pid = 0;
+            job_list[i].jid = 0;
+            job_list[i].state = UNDEF;
+            job_list[i].cmdline[0] = '\0';
+        }
+    }
+}
+
 
 /*
  * sigint_handler - SIGINT 시그널 핸들러 (Ctrl+C)
@@ -580,27 +595,25 @@ int main(void)
 
     init_jobs();
 
-    // 시그널 마스크 설정
     sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTSTP);
     sigprocmask(SIG_BLOCK, &mask, &prev);
 
-    // 시그널 핸들러 등록
     Signal(SIGCHLD, sigchld_handler);
     Signal(SIGINT,  sigint_handler);
     Signal(SIGTSTP, sigtstp_handler);
 
     sigprocmask(SIG_SETMASK, &prev, NULL);
 
-    // 메인 루프
     while (1) {
         if (!read_input(cmdline)) {
             if (feof(stdin))
                 exit(0);
             continue;
         }
+        check_done_jobs();
         eval(cmdline);
     }
 
