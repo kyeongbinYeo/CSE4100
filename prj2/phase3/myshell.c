@@ -1,5 +1,6 @@
 #include "csapp.h"
 #include "myshell.h"
+#include <unistd.h>  // usleep 사용
 
 /*
  * 전역 변수들
@@ -127,19 +128,17 @@ void sigchld_handler(int sig)
         if (job == NULL) continue;
 
         if (WIFSTOPPED(status)) {
-            // 자식이 정지됨 (Ctrl+Z)
             job->state = STOPPED;
             printf("\n[%d] %d Stopped %s", job->jid, job->pid, job->cmdline);
             fflush(stdout);
             if (job->pid == fg_pid)
                 fg_pid = 0;
         } else {
-            // 자식이 종료됨
             if (pid == fg_pid) {
                 fg_pid = 0;
             } else {
-                // 백그라운드 job 종료시 프롬프트 다시 출력
-                printf("\n%s", PROMPT);
+                // 백그라운드 job 종료시 Terminated 출력 후 프롬프트
+                printf("[%d] %d Terminated %s%s", job->jid, job->pid, job->cmdline, PROMPT);
                 fflush(stdout);
             }
             delete_job(pid);
