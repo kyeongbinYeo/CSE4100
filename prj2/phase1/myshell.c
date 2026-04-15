@@ -99,25 +99,39 @@ int builtin_command(char **argv)
 /*
  * parseline - split input into tokens
  * bg job if last arg is &
+ * 따옴표로 묶인 문자열도 처리
  */
 int parseline(char *buf, char **argv)
 {
     int     nargs = 0;
     int     is_bg;
-    char   *token;
+    char   *ptr = buf;
 
-    // tokenize using strtok
-    token = strtok(buf, " \t\n");
-    while (token != NULL && nargs < MAXARGS - 1) {
-        argv[nargs++] = token;
-        token = strtok(NULL, " \t\n");
+    while (*ptr != '\0' && *ptr != '\n') {
+        // 공백 스킵
+        while (*ptr == ' ' || *ptr == '\t') ptr++;
+        if (*ptr == '\0' || *ptr == '\n') break;
+
+        if (*ptr == '"') {
+            // 따옴표로 묶인 토큰: 따옴표 제거
+            ptr++;
+            argv[nargs++] = ptr;
+            while (*ptr != '"' && *ptr != '\0' && *ptr != '\n') ptr++;
+            if (*ptr == '"') *ptr++ = '\0';
+        } else {
+            // 일반 토큰
+            argv[nargs++] = ptr;
+            while (*ptr && *ptr != ' ' && *ptr != '\t' && *ptr != '\n')
+                ptr++;
+            if (*ptr) *ptr++ = '\0';
+        }
     }
     argv[nargs] = NULL;
 
     if (nargs == 0)
         return 0;
 
-    // check for background operator
+    // 마지막 인자가 &인지 확인
     if ((is_bg = (!strcmp(argv[nargs - 1], "&"))) != 0)
         argv[--nargs] = NULL;
 
